@@ -66,8 +66,8 @@ subtest 'Bad plugins tests' => sub {
         'Bad plugins raise warning';
 
     my $routes = get_defined_routes($t);
-    ok( !exists $routes->{'/contrib/badass/patrons/(:patron_id)/bother_wrong'}, 'Route doesn\'t exist' );
-    ok( exists $routes->{'/contrib/testplugin/patrons/(:patron_id)/bother'}, 'Route exists' );
+    ok( !exists $routes->{'/contrib/badass/patrons/<:patron_id>/bother_wrong'}, 'Route doesn\'t exist' );
+    ok( exists $routes->{'/contrib/testplugin/patrons/<:patron_id>/bother'}, 'Route exists' );
 
     $schema->storage->txn_rollback;
 };
@@ -98,7 +98,7 @@ subtest 'Disabled plugins tests' => sub {
     my $t = Test::Mojo->new('Koha::REST::V1');
 
     my $routes = get_defined_routes($t);
-    ok( !exists $routes->{'/contrib/testplugin/patrons/(:patron_id)/bother'},
+    ok( !exists $routes->{'/contrib/testplugin/patrons/<:patron_id>/bother'},
         'Plugin disabled, route not defined' );
 
     $good_plugin->enable;
@@ -106,7 +106,7 @@ subtest 'Disabled plugins tests' => sub {
     $t      = Test::Mojo->new('Koha::REST::V1');
     $routes = get_defined_routes($t);
 
-    ok( exists $routes->{'/contrib/testplugin/patrons/(:patron_id)/bother'},
+    ok( exists $routes->{'/contrib/testplugin/patrons/<:patron_id>/bother'},
         'Plugin enabled, route defined' );
 
     $schema->storage->txn_rollback;
