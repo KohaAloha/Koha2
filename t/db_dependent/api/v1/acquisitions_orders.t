@@ -77,14 +77,26 @@ subtest 'list() tests' => sub {
 
         my $size = keys %{$fields};
 
-        plan tests => $size * 3;
+        plan tests => $size * (2 + 2 * $size);
 
         foreach my $field ( keys %{$fields} ) {
             my $model_field = $fields->{ $field };
-            my $result =
-            $t->get_ok("//$userid:$password@/api/v1/acquisitions/orders?$field=" . $order->$model_field)
-              ->status_is(200)
-              ->json_has( [ $order, $another_order ] );
+            my $result = $t->get_ok("//$userid:$password@/api/v1/acquisitions/orders?$field=" . $order->$model_field)
+              ->status_is(200);
+
+            foreach my $key ( keys %{$fields} ) {
+              my $key_field = $fields->{ $key };
+              # Uh oh. We use budget_id in the query but return fund_id.
+              $key = 'fund_id' if ($key eq 'budget_id');
+              # Check the result order first since it's not predefined.
+              if ($result->tx->res->json->[0]->{$key} eq $order->$key_field) {
+                $result->json_is( "/0/$key", $order->$key_field );
+                $result->json_is( "/1/$key", $another_order->$key_field );
+              } else {
+                $result->json_is( "/0/$key", $another_order->$key_field );
+                $result->json_is( "/1/$key", $order->$key_field );
+              }
+            }
         }
     };
 
@@ -250,11 +262,26 @@ subtest 'update() tests' => sub {
         address1 => "New library address",
     };
 
-    $t->put_ok( "//$auth_userid:$password@/api/v1/libraries/$library_id" => json => $library_with_missing_field )
-      ->status_is(400)
-      ->json_has( "/errors" =>
-          [ { message => "Missing property.", path => "/body/address2" } ]
+    my $result = $t->put_ok( "//$auth_userid:$password@/api/v1/libraries/$library_id" => json => $library_with_missing_field )
+      ->status_is(400);
+    # Check the result order first since it's not predefined.
+    if ($result->tx->res->json->{errors}->[0]->{path} eq '/body/name') {
+      $result->json_is( 
+        "/errors", 
+        [
+          {message => "Missing property.", path => "/body/name"},
+          {message => "Missing property.", path => "/body/library_id"}
+        ]
       );
+    } else {
+      $result->json_is( 
+        "/errors", 
+        [
+          {message => "Missing property.", path => "/body/library_id"},
+          {message => "Missing property.", path => "/body/name"}
+        ]
+      );
+    }
 
     my $deleted_library = $builder->build_object( { class => 'Koha::Libraries' } );
     my $library_with_updated_field = $deleted_library->to_api;
