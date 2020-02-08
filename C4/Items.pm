@@ -859,7 +859,9 @@ sub GetItemsForInventory {
 
         # Auth values
         foreach (keys %$row) {
-            if (defined($avmapping->{"items.$_,".$row->{'frameworkcode'}.",".$row->{$_}})) {
+            no warnings;
+
+            if (defined($avmapping->{  "items.$_," . $row->{'frameworkcode'} . "," . $row->{$_} } ) ) {
                 $row->{$_} = $avmapping->{"items.$_,".$row->{'frameworkcode'}.",".$row->{$_}};
             }
         }
