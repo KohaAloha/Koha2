@@ -17,7 +17,7 @@
 
 use Modern::Perl;
 
-use Test::More tests => 12;
+use Test::More tests => 18;
 use Test::Exception;
 use Test::Warn;
 use DateTime;
@@ -213,6 +213,325 @@ subtest 'TO_JSON tests' => sub {
     $schema->storage->txn_rollback;
 };
 
+subtest "to_api() tests" => sub {
+
+    plan tests => 26;
+
+    $schema->storage->txn_begin;
+
+    my $city = $builder->build_object({ class => 'Koha::Cities' });
+
+    # THE mapping
+    # cityid       => 'city_id',
+    # city_country => 'country',
+    # city_name    => 'name',
+    # city_state   => 'state',
+    # city_zipcode => 'postal_code'
+
+    my $api_city = $city->to_api;
+
+    is( $api_city->{city_id},     $city->cityid,       'Attribute translated correctly' );
+    is( $api_city->{country},     $city->city_country, 'Attribute translated correctly' );
+    is( $api_city->{name},        $city->city_name,    'Attribute translated correctly' );
+    is( $api_city->{state},       $city->city_state,   'Attribute translated correctly' );
+    is( $api_city->{postal_code}, $city->city_zipcode, 'Attribute translated correctly' );
+
+    # Lets emulate an undef
+    my $city_class = Test::MockModule->new('Koha::City');
+    $city_class->mock( 'to_api_mapping',
+        sub {
+            return {
+                cityid       => 'city_id',
+                city_country => 'country',
+                city_name    => 'name',
+                city_state   => 'state',
+                city_zipcode => undef
+            };
+        }
+    );
+
+    $api_city = $city->to_api;
+
+    is( $api_city->{city_id},     $city->cityid,       'Attribute translated correctly' );
+    is( $api_city->{country},     $city->city_country, 'Attribute translated correctly' );
+    is( $api_city->{name},        $city->city_name,    'Attribute translated correctly' );
+    is( $api_city->{state},       $city->city_state,   'Attribute translated correctly' );
+    ok( !exists $api_city->{postal_code}, 'Attribute removed' );
+
+    # Pick a class that won't have a mapping for the API
+    my $illrequest = $builder->build_object({ class => 'Koha::Illrequests' });
+    is_deeply( $illrequest->to_api, $illrequest->TO_JSON, 'If no overloaded to_api_mapping method, return TO_JSON' );
+
+    my $biblio = $builder->build_sample_biblio();
+    my $item = $builder->build_sample_item({ biblionumber => $biblio->biblionumber });
+    my $hold = $builder->build_object({ class => 'Koha::Holds', value => { itemnumber => $item->itemnumber } });
+
+    my $embeds = { 'items' => {} };
+
+    my $biblio_api = $biblio->to_api({ embed => $embeds });
+
+    ok(exists $biblio_api->{items}, 'Items where embedded in biblio results');
+    is($biblio_api->{items}->[0]->{item_id}, $item->itemnumber, 'Item matches');
+    ok(!exists $biblio_api->{items}->[0]->{holds}, 'No holds info should be embedded yet');
+
+    $embeds = (
+        {
+            'items' => {
+                'children' => {
+                    'holds' => {}
+                }
+            },
+            'biblioitem' => {}
+        }
+    );
+    $biblio_api = $biblio->to_api({ embed => $embeds });
+
+    ok(exists $biblio_api->{items}, 'Items where embedded in biblio results');
+    is($biblio_api->{items}->[0]->{item_id}, $item->itemnumber, 'Item still matches');
+    ok(exists $biblio_api->{items}->[0]->{holds}, 'Holds info should be embedded');
+    is($biblio_api->{items}->[0]->{holds}->[0]->{hold_id}, $hold->reserve_id, 'Hold matches');
+    is_deeply($biblio_api->{biblioitem}, $biblio->biblioitem->to_api, 'More than one root');
+
+    my $hold_api = $hold->to_api(
+        {
+            embed => { 'item' => {} }
+        }
+    );
+
+    is( ref($hold_api->{item}), 'HASH', 'Single nested object works correctly' );
+    is( $hold_api->{item}->{item_id}, $item->itemnumber, 'Object embedded correctly' );
+
+    # biblio with no items
+    my $new_biblio = $builder->build_sample_biblio;
+    my $new_biblio_api = $new_biblio->to_api({ embed => $embeds });
+
+    is_deeply( $new_biblio_api->{items}, [], 'Empty list if no items' );
+
+    my $biblio_class = Test::MockModule->new('Koha::Biblio');
+    $biblio_class->mock( 'undef_result', sub { return; } );
+
+    $new_biblio_api = $new_biblio->to_api({ embed => ( { 'undef_result' => {} } ) });
+    ok( exists $new_biblio_api->{undef_result}, 'If a method returns undef, then the attribute is defined' );
+    is( $new_biblio_api->{undef_result}, undef, 'If a method returns undef, then the attribute is undef' );
+
+    $biblio_class->mock( 'items',
+        sub { return [ bless { itemnumber => 1 }, 'Somethings' ]; } );
+
+    throws_ok {
+        $new_biblio_api = $new_biblio->to_api(
+            { embed => { 'items' => { children => { asd => {} } } } } );
+    }
+    'Koha::Exceptions::Exception',
+"An exception is thrown if a blessed object to embed doesn't implement to_api";
+
+    is(
+        "$@",
+        "Asked to embed items but its return value doesn't implement to_api",
+        "Exception message correct"
+    );
+
+    $schema->storage->txn_rollback;
+};
+
+subtest "to_api_mapping() tests" => sub {
+
+    plan tests => 1;
+
+    $schema->storage->txn_begin;
+
+    my $illrequest = $builder->build_object({ class => 'Koha::Illrequests' });
+    is_deeply( $illrequest->to_api_mapping, {}, 'If no to_api_mapping present, return empty hashref' );
+
+    $schema->storage->txn_rollback;
+};
+
+subtest "from_api_mapping() tests" => sub {
+
+    plan tests => 3;
+
+    $schema->storage->txn_begin;
+
+    my $city = $builder->build_object({ class => 'Koha::Cities' });
+
+    # Lets emulate an undef
+    my $city_class = Test::MockModule->new('Koha::City');
+    $city_class->mock( 'to_api_mapping',
+        sub {
+            return {
+                cityid       => 'city_id',
+                city_country => 'country',
+                city_zipcode => undef
+            };
+        }
+    );
+
+    is_deeply(
+        $city->from_api_mapping,
+        {
+            city_id => 'cityid',
+            country => 'city_country'
+        },
+        'Mapping returns correctly, undef ommited'
+    );
+
+    $city_class->unmock( 'to_api_mapping');
+    $city_class->mock( 'to_api_mapping',
+        sub {
+            return {
+                cityid       => 'city_id',
+                city_country => 'country',
+                city_zipcode => 'postal_code'
+            };
+        }
+    );
+
+    is_deeply(
+        $city->from_api_mapping,
+        {
+            city_id => 'cityid',
+            country => 'city_country'
+        },
+        'Reverse mapping is cached'
+    );
+
+    # Get a fresh object
+    $city = $builder->build_object({ class => 'Koha::Cities' });
+    is_deeply(
+        $city->from_api_mapping,
+        {
+            city_id     => 'cityid',
+            country     => 'city_country',
+            postal_code => 'city_zipcode'
+        },
+        'Fresh mapping loaded'
+    );
+
+    $schema->storage->txn_rollback;
+};
+
+subtest 'set_from_api() tests' => sub {
+
+    plan tests => 4;
+
+    $schema->storage->txn_begin;
+
+    my $city = $builder->build_object({ class => 'Koha::Cities' });
+    my $city_unblessed = $city->unblessed;
+    my $attrs = {
+        name        => 'Cordoba',
+        country     => 'Argentina',
+        postal_code => '5000'
+    };
+    $city->set_from_api($attrs);
+
+    is( $city->city_state, $city_unblessed->{city_state}, 'Untouched attributes are preserved' );
+    is( $city->city_name, $attrs->{name}, 'city_name updated correctly' );
+    is( $city->city_country, $attrs->{country}, 'city_country updated correctly' );
+    is( $city->city_zipcode, $attrs->{postal_code}, 'city_zipcode updated correctly' );
+
+    $schema->storage->txn_rollback;
+};
+
+subtest 'new_from_api() tests' => sub {
+
+    plan tests => 4;
+
+    $schema->storage->txn_begin;
+
+    my $attrs = {
+        name        => 'Cordoba',
+        country     => 'Argentina',
+        postal_code => '5000'
+    };
+    my $city = Koha::City->new_from_api($attrs);
+
+    is( ref($city), 'Koha::City', 'Object type is correct' );
+    is( $city->city_name,    $attrs->{name}, 'city_name updated correctly' );
+    is( $city->city_country, $attrs->{country}, 'city_country updated correctly' );
+    is( $city->city_zipcode, $attrs->{postal_code}, 'city_zipcode updated correctly' );
+
+    $schema->storage->txn_rollback;
+};
+
+subtest 'attributes_from_api() tests' => sub {
+
+    plan tests => 12;
+
+    my $patron = Koha::Patron->new();
+
+    my $attrs = $patron->attributes_from_api(
+        {
+            updated_on => '2019-12-27T14:53:00',
+        }
+    );
+
+    ok( exists $attrs->{updated_on},
+        'No translation takes place if no mapping' );
+    is(
+        ref( $attrs->{updated_on} ),
+        'DateTime',
+        'Given a string, a timestamp field is converted into a DateTime object'
+    );
+
+    $attrs = $patron->attributes_from_api(
+        {
+            last_seen  => '2019-12-27T14:53:00'
+        }
+    );
+
+    ok( exists $attrs->{lastseen},
+        'Translation takes place because of the defined mapping' );
+    is(
+        ref( $attrs->{lastseen} ),
+        'DateTime',
+        'Given a string, a datetime field is converted into a DateTime object'
+    );
+
+    $attrs = $patron->attributes_from_api(
+        {
+            date_of_birth  => '2019-12-27'
+        }
+    );
+
+    ok( exists $attrs->{dateofbirth},
+        'Translation takes place because of the defined mapping' );
+    is(
+        ref( $attrs->{dateofbirth} ),
+        'DateTime',
+        'Given a string, a date field is converted into a DateTime object'
+    );
+
+    throws_ok
+        {
+            $attrs = $patron->attributes_from_api(
+                {
+                    date_of_birth => '20141205',
+                }
+            );
+        }
+        'Koha::Exceptions::BadParameter',
+        'Bad date throws an exception';
+
+    is(
+        $@->parameter,
+        'date_of_birth',
+        'Exception parameter is the API field name, not the DB one'
+    );
+
+    # Booleans
+    $attrs = $patron->attributes_from_api(
+        {
+            incorrect_address => Mojo::JSON->true,
+            patron_card_lost  => Mojo::JSON->false,
+        }
+    );
+
+    ok( exists $attrs->{gonenoaddress}, 'Attribute gets translated' );
+    is( $attrs->{gonenoaddress}, 1, 'Boolean correctly translated to integer (true => 1)' );
+    ok( exists $attrs->{lost}, 'Attribute gets translated' );
+    is( $attrs->{lost}, 0, 'Boolean correctly translated to integer (false => 0)' );
+};
+
 subtest "Test update method" => sub {
     plan tests => 6;
 
@@ -293,10 +612,10 @@ subtest 'store() tests' => sub {
         'Exception message is correct'
     );
 
-    is(
+    like(
        $@->duplicate_id,
-       'secret',
-       'Exception field is correct'
+       qr/(api_keys\.)?secret/,
+       'Exception field is correct (note that MySQL 8 is displaying the tablename)'
     );
 
     $schema->storage->dbh->{PrintError} = $print_error;
@@ -347,17 +666,20 @@ subtest 'store() tests' => sub {
 
     subtest 'Bad value tests' => sub {
 
-        plan tests => 1;
+        plan tests => 3;
 
         my $patron = $builder->build_object({ class => 'Koha::Patrons' });
 
         my $print_error = $schema->storage->dbh->{PrintError};
         $schema->storage->dbh->{PrintError} = 0;
 
-        throws_ok
-            { $patron->lastseen('wrong_value')->store; }
-            'Koha::Exceptions::Object::BadValue',
-            'Exception thrown correctly';
+        try {
+            $patron->lastseen('wrong_value')->store;
+        } catch {
+            ok( $_->isa('Koha::Exceptions::Object::BadValue'), 'Exception thrown correctly' );
+            like( $_->property, qr/(borrowers\.)?lastseen/, 'Column should be the expected one' ); # The table name is not always displayed, it depends on the DBMS version
+            is( $_->value, 'wrong_value', 'Value should be the expected one' );
+        };
 
         $schema->storage->dbh->{PrintError} = $print_error;
     };
