@@ -535,21 +535,39 @@ sub _UpdateCourseItem {
     my %data = map { $_ => $params{$_} } @FIELDS;
     my %enabled = map { $_ . "_enabled" => $params{ $_ . "_enabled" } } @FIELDS;
 
-    $course_item->update( { %data, %enabled } );
+    my $item = Koha::Items->find( $course_item->itemnumber );
+
+    # Handle updates to changed fields for a course item, both adding and removing
     if ( $course_item->is_enabled ) {
         my $item_fields = {};
-        $item_fields->{itype}         = $course_item->itype         if $course_item->itype_enabled;
-        $item_fields->{ccode}         = $course_item->ccode         if $course_item->ccode_enabled;
-        $item_fields->{location}      = $course_item->location      if $course_item->location_enabled;
-        $item_fields->{homebranch}    = $course_item->homebranch    if $course_item->homebranch_enabled;
-        $item_fields->{holdingbranch} = $course_item->holdingbranch if $course_item->holdingbranch_enabled;
 
-        Koha::Items->find( $course_item->itemnumber )
-                   ->set( $item_fields )
-                   ->store
+        for my $field ( @FIELDS ) {
+
+            my $field_enabled = $field . '_enabled';
+            my $field_storage = $field . '_storage';
+
+            # Find newly enabled field and add item value to storage
+            if ( $params{$field_enabled} && !$course_item->$field_enabled ) {
+                $enabled{$field_storage} = $item->$field;
+                $item_fields->{$field}   = $params{$field};
+            }
+            # Find newly disabled field and copy the storage value to the item, unset storage value
+            elsif ( !$params{$field_enabled} && $course_item->$field_enabled ) {
+                $item_fields->{$field}   = $course_item->$field_storage;
+                $enabled{$field_storage} = undef;
+            }
+            # The field was already enabled, copy the incoming value to the item.
+            # The "original" ( when not on course reserve ) value is already in the storage field
+            elsif ( $course_item->$field_enabled) {
+                $item_fields->{$field} = $params{$field};
+            }
+        }
+
+        $item->set( $item_fields )->store
             if keys %$item_fields;
-
     }
+
+    $course_item->update( { %data, %enabled } );
 
 }
 
