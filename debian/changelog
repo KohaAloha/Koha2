@@ -2,6 +2,12 @@ koha (20.05.00.000-1) dev; urgency=medium
 
   * New upstream release (20.05.00.000)
 
+ -- buildbot <buildbot@kohaaloha.com>  Sat, 30 May 2020 13:49:19 +1200
+
+koha (20.05.00.000-1) dev; urgency=medium
+
+  * New upstream release (20.05.00.000)
+
  -- buildbot <buildbot@kohaaloha.com>  Fri, 29 May 2020 23:14:58 +1200
 
 koha (20.05.00.000-1) dev; urgency=medium
